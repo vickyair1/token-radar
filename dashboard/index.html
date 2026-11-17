@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Token Radar: pre-token protocols ranked by implied value</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<a class="skip" href="#board">Skip to the board</a>
+<header class="top">
+  <div class="brand">
+    <div class="mark" aria-hidden="true">&#9679;</div>
+    <div>
+      <h1>Token Radar</h1>
+      <p class="sub">Pre-token protocols, ranked by what their launch would be worth &mdash; and how to farm each one.</p>
+    </div>
+  </div>
+  <div class="stats" id="stats" aria-label="Board summary"></div>
+</header>
+<nav class="tabs" id="tabs" aria-label="Views">
+  <button data-tab="pre-token" class="active">Pre-token board</button>
+  <button data-tab="live">Live tokens</button>
+  <button data-tab="model">The model</button>
+</nav>
+<section class="controls" id="controls" aria-label="Board filters">
+  <label class="search"><span class="sr">Search</span><input id="q" type="search" placeholder="Search a protocol&hellip;" autocomplete="off"></label>
+  <label>Category <select id="category"><option value="all">All categories</option></select></label>
+  <label>Chain <select id="chain"><option value="all">All chains</option></select></label>
+  <label>Scope <select id="scope"><option value="all">Watchlist + early</option><option value="watchlist">Watchlist only</option><option value="early">Early radar only</option></select></label>
+  <span class="count" id="count"></span>
+</section>
+<main id="board" tabindex="-1" aria-busy="true"></main>
+<aside class="drawer" id="drawer" aria-label="Protocol detail" hidden></aside>
+<footer class="foot">
+  <p>Data: DefiLlama snapshot, frozen <span id="asof"></span>. Implied values are a model's estimate from that snapshot, not a promise: a launch may never come, and a token may trade far from any estimate. Never pay to claim an airdrop.</p>
+</footer>
+<script src="../data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
