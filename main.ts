@@ -2,7 +2,8 @@
 //
 // The program reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>),
 // fits a log-log regression of market cap on TVL from the snapshot's own live-token
-// protocols, scores every pre-token protocol with the model in lib/model.ts, writes the
+// protocols plus a launch-odds model from its live/pre-token split, scores every
+// pre-token protocol of the candidate shape with the model in lib/model.ts, writes the
 // ranked board to /output/board.json, and copies this repository's dashboard/ and
 // screenshots/ to /output. Last, it writes /output/dossier.json, the summary the judge
 // reads, with the vendored make.fun library.
@@ -10,8 +11,10 @@
 // The dashboard is a static page, no framework and no network: dashboard/index.html,
 // dashboard/app.css and dashboard/app.js read /output/data.js, which this program
 // writes from the same board. The page recomputes every row's implied value from the
-// snapshot figures and the fitted regression, so the page's arithmetic and the board's
-// data are visibly the same numbers.
+// snapshot figures and the fitted models, so the page's arithmetic and the board's
+// data are visibly the same numbers — and this program verifies it at the file level:
+// it reads board.json and data.js back and counts the rows whose implied values agree,
+// stamping the count into data.js before the dossier is built.
 //
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input ../input/snapshot.json
@@ -46,7 +49,7 @@ if (!existsSync(inputFile)) {
 const out = arg('output', process.env.MAKEFUN_OUTPUT_DIR ?? '/output');
 
 const snapshot = parseSnapshot(readFileSync(inputFile, 'utf8'));
-const { board, radar, calibration } = buildRadar(snapshot);
+const { board, radar, calibration, odds } = buildRadar(snapshot);
 const issue = boardIssue(board, snapshot);
 if (issue !== null) {
   process.stderr.write(`token radar: the model wrote a board the gate refuses: ${issue}\n`);
@@ -55,6 +58,24 @@ if (issue !== null) {
 
 mkdirSync(out, { recursive: true });
 writeFileSync(join(out, 'board.json'), `${JSON.stringify({ rows: board })}\n`);
+writeFileSync(join(out, 'data.js'), dataScript(radar));
+
+// The page's data must be the board's data: read both files back and count the rows
+// whose implied values agree, then stamp the verified count into data.js. A mismatch
+// fails the run rather than shipping a page that disagrees with its board.
+const boardBack = JSON.parse(readFileSync(join(out, 'board.json'), 'utf8')) as { rows: { slug: string; implied_value_usd: number }[] };
+const dataBack = readFileSync(join(out, 'data.js'), 'utf8').replace(/^window\.RADAR=/, '').replace(/;\n$/, '');
+const radarBack = JSON.parse(dataBack) as { rows: { slug: string; implied_value_usd: number }[] };
+const boardBySlug = new Map(boardBack.rows.map((r) => [r.slug, r.implied_value_usd]));
+let matched = 0;
+for (const r of radarBack.rows) {
+  if (boardBySlug.get(r.slug) === r.implied_value_usd) matched++;
+}
+if (matched !== board.length || radarBack.rows.length !== board.length) {
+  process.stderr.write(`token radar: data.js matches board.json on ${matched} of ${board.length} rows: refusing to ship a page that disagrees with its board\n`);
+  process.exit(1);
+}
+radar.check_board_rows_match = matched;
 writeFileSync(join(out, 'data.js'), dataScript(radar));
 
 /** Copy one directory's regular files into `to`, skipping names that start with a dot. */
@@ -89,8 +110,9 @@ for (const name of shots) {
 writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEXT_MAX_BYTES, screenshots: SCREENSHOT_CAPS, dashboard: { max_files: 400, max_bytes: 4_194_304 } }));
 
 process.stdout.write(
-  `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
-    `token radar: regression log(mcap) = ${calibration.regression.intercept} + ${calibration.regression.slope} x log(TVL), R2 ${calibration.regression.r_squared}, ` +
+  `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.off_list_size} off-list, ${radar.early_size} early)\n` +
+    `token radar: value log(mcap) = ${calibration.regression.intercept} + ${calibration.regression.slope} x log(TVL), R2 ${calibration.regression.r_squared}, ` +
     `growth coef ${calibration.regression.growth_coef}, LOO median ${calibration.regression.loo_median_factor}x, from ${calibration.regression.trimmed_count} trimmed live protocols\n` +
-    `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (3 files), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
+    `token radar: odds logit on ${odds.train_count} candidates, LOO ${odds.loo_correct}/${odds.train_count} right (${odds.loo_accuracy}), Brier ${odds.loo_brier} vs base ${odds.base_rate}\n` +
+    `token radar: data.js matches board.json on ${matched}/${board.length} rows; wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')}, ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
 );
