@@ -1,4 +1,4 @@
-// The token radar's model, version radar-4: one snapshot of the protocol universe in,
+// The token radar's model, version radar-5: one snapshot of the protocol universe in,
 // one ranked board out. The board answers "which pre-token protocol is worth farming
 // next" as an expected value: what the launch would be worth IF it launches, times the
 // odds it launches at all, net of what farming it costs.
@@ -34,13 +34,24 @@
 //   but it is noisy, and no week should double or halve a launch value.
 //
 //   Stage 4, launch odds. A logistic model fitted on the snapshot's own live/pre-token
-//   split: log TVL, log age, log chain count, and the category's shrunk token rate. It
-//   answers "how often do protocols that look like this one already record a token" —
-//   lenders and exchanges usually do (79% and 74%), risk curators almost never (13%).
-//   Growth is deliberately NOT an input: fast growth marks the pre-token phase itself
-//   (points programs inflate it), so it would punish exactly the momentum farmers want.
-//   The odds are bounded to 10%-90%: no launch is certain, none is impossible. Held out,
-//   the model calls 65% of protocols right against a 55% base rate.
+//   split: log TVL, log age, log chain count, the category's shrunk token rate, and
+//   kinship — whether the protocol's name shares a stem with a protocol that already
+//   records a token. Kinship is a strong, clean signal: protocols with a name-stem kin
+//   record a token 75% of the time, against 45% without one. It answers "how often do
+//   protocols that look like this one already record a token" — lenders and exchanges
+//   usually do (79% and 74%), risk curators almost never (13%). Growth is deliberately
+//   NOT an input: fast growth marks the pre-token phase itself (protocols growing over
+//   5% a week record a token only 18% of the time, against 68% for those shrinking
+//   5–20%), so it would punish exactly the momentum farmers want. The odds are bounded
+//   to 10%-90%: no launch is certain, none is impossible. Held out, the model calls 68%
+//   of protocols right against a 55% base rate.
+//
+//   Age in the value fit was tested in every form the backtest could state — a fitted
+//   log(age) term, a young-protocol indicator, an exponential decay, a log age capped
+//   at two years, an age-by-size interaction — and every one of them comes out at
+//   zero or makes the held-out miss worse, so the value fit carries no age term and
+//   the time a protocol has run with no token enters the implied value through the
+//   odds, where it is fitted. The dashboard's rejected-features table names each test.
 //
 //   implied (expected value) = exp(intercept + slope x log(TVL) + category effect)
 //             x growth adjustment x launch odds
@@ -122,14 +133,14 @@ export const MODEL: ModelConstants = {
   implied_cap_usd: 25_000_000_000,
   odds_min: 0.1,
   odds_max: 0.9,
-  odds_shrink: 10,
+  odds_shrink: 20,
   drop_shares: [0.035, 0.07, 0.14],
   tickets: [100, 1000, 10000],
   farm_threshold_usd: 10,
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-4';
+export const MODEL_VERSION = 'radar-5';
 
 /**
  * Super-categories: economically adjacent categories that share a business model,
@@ -234,6 +245,7 @@ export interface OddsFit {
   beta: number[];
   global_rate: number;
   category_rates: { category: string; peers: number; rate: number }[];
+  kinship: { rate_with_kin: number; n_with_kin: number; rate_without_kin: number; n_without_kin: number };
   train_count: number;
   cv_accuracy: number;
   cv_brier: number;
@@ -242,6 +254,17 @@ export interface OddsFit {
   loo_brier: number;
   base_rate: number;
   calibration: { predicted: number; actual: number; count: number }[];
+}
+
+/** One odds term's contribution to the logit, so the detail view can show the build. */
+export interface OddsComponents {
+  constant: number;
+  tvl: number;
+  age: number;
+  chains: number;
+  category: number;
+  kinship: number;
+  total: number;
 }
 
 /** One bucket of the 758-protocol accounting. */
@@ -308,9 +331,13 @@ export interface BoardRow {
     growth_multiplier: number;
     launch_odds: number;
     category_token_rate: number;
+    kinship: number;
+    odds_components: OddsComponents;
     age_days: number | null;
   };
   farm_steps: string[];
+  /** The farm plan structured, for the dashboard's data: same steps as farm_steps, before stringification. */
+  farm_plan: FarmStep[];
 }
 
 /** The dashboard's compact view of one row, with farm plans generated in the page. */
@@ -338,9 +365,13 @@ export interface RadarRow {
   category_peers: number;
   growth_multiplier: number;
   category_token_rate: number;
+  kinship: number;
+  odds_components: OddsComponents;
   labor_hours: number;
   gas_total_usd: number;
   comparables: Comparable[];
+  /** The farm plan, structured, straight from the model's own derivation. */
+  farm_steps: FarmStep[];
 }
 
 /** A live-token protocol: it already trades, so the board shows the market's own value, not a model's. */
@@ -499,6 +530,41 @@ export function liveProtocols(protocols: SnapshotProtocol[]): SnapshotProtocol[]
 /** Whether a protocol records a token at all (a market cap, a CoinGecko id, or a symbol). */
 export function hasToken(p: SnapshotProtocol): boolean {
   return p.mcap_usd !== null || p.gecko_id !== null || p.symbol !== null;
+}
+
+/** Generic words that carry no identity: a name stem must say which protocol it is. */
+export const KINSHIP_STOPWORDS = new Set([
+  'finance', 'protocol', 'network', 'capital', 'exchange', 'labs', 'dao',
+  'token', 'chain', 'defi', 'crypto', 'vault', 'vaults', 'liquid',
+  'staking', 'bridge', 'market', 'markets', 'trade', 'trading',
+  'global', 'world', 'prime', 'plus', 'one', 'app', 'xyz', 'io',
+  'the', 'and', 'for', 'with', 'hub', 'pay', 'swap', 'perp',
+  'perpetual', 'options', 'derivatives', 'yield', 'farm', 'farms',
+]);
+
+/** The name stems that identify a protocol: lowercase letter-runs of four or more letters, minus stopwords. */
+export function nameStems(name: string): Set<string> {
+  const words = name.toLowerCase().match(/[a-z]+/g) ?? [];
+  return new Set(words.filter((w) => w.length >= 4 && !KINSHIP_STOPWORDS.has(w)));
+}
+
+/**
+ * Kinship: 1 when a DIFFERENT protocol that already records a token shares one of
+ * this protocol's name stems, else 0. A spin-off, a second product or a renamed
+ * sibling of a token that trades carries its family with it: 75% of kin protocols
+ * record a token, against 45% of the rest. No name is ever special-cased — the
+ * stems come from the snapshot's own names, and the same rule scores every row.
+ */
+export function kinshipOf(protocol: SnapshotProtocol, protocols: SnapshotProtocol[]): number {
+  const stems = nameStems(protocol.name);
+  if (stems.size === 0) return 0;
+  for (const other of protocols) {
+    if (other.slug === protocol.slug || !hasToken(other)) continue;
+    for (const s of nameStems(other.name)) {
+      if (stems.has(s)) return 1;
+    }
+  }
+  return 0;
 }
 
 /** One live protocol's features for the value fit. */
@@ -743,6 +809,7 @@ interface OddsFeat {
   ltvl: number;
   lage: number;
   lchains: number;
+  kin: number;
   y: number;
 }
 
@@ -757,6 +824,7 @@ function oddsFeats(protocols: SnapshotProtocol[], asOf: string, model: ModelCons
         ltvl: Math.log(p.tvl_usd),
         lage: Math.log((age ?? model.unknown_age_days) + 1),
         lchains: Math.log1p(p.chains.length),
+        kin: kinshipOf(p, protocols),
         y: hasToken(p) ? 1 : 0,
       };
     });
@@ -770,11 +838,11 @@ function categoryTokenRate(train: OddsFeat[], category: string, shrink: number):
   return (own.reduce((a, f) => a + f.y, 0) + shrink * global) / (own.length + shrink);
 }
 
-/** The odds design row: [1, log TVL, log age, log chains, logit of the shrunk category token rate]. */
+/** The odds design row: [1, log TVL, log age, log chains, logit of the shrunk category token rate, kinship]. */
 function oddsDesign(train: OddsFeat[], f: OddsFeat, model: ModelConstants): number[] {
   const r = categoryTokenRate(train, f.category, model.odds_shrink);
   const clamped = Math.min(0.99, Math.max(0.01, r));
-  return [1, f.ltvl, f.lage, f.lchains, Math.log(clamped / (1 - clamped))];
+  return [1, f.ltvl, f.lage, f.lchains, Math.log(clamped / (1 - clamped)), f.kin];
 }
 
 /** Logistic regression by IRLS with a small ridge prior; deterministic, no randomness. */
@@ -906,10 +974,21 @@ export function fitOdds(protocols: SnapshotProtocol[], asOf: string, model: Mode
     return { category, peers, rate: round4(categoryTokenRate(set, category, model.odds_shrink)) };
   });
 
+  // Kinship's own base rates: the signal the new feature carries, stated plainly.
+  const kinOnes = set.filter((f) => f.kin === 1);
+  const kinZeros = set.filter((f) => f.kin === 0);
+  const kinship = {
+    rate_with_kin: round4(kinOnes.reduce((a, f) => a + f.y, 0) / Math.max(kinOnes.length, 1)),
+    n_with_kin: kinOnes.length,
+    rate_without_kin: round4(kinZeros.reduce((a, f) => a + f.y, 0) / Math.max(kinZeros.length, 1)),
+    n_without_kin: kinZeros.length,
+  };
+
   return {
     beta: beta.map(round4),
     global_rate: round4(globalRate),
     category_rates: categoryRates,
+    kinship,
     train_count: n,
     cv_accuracy: round4(cvAcc),
     cv_brier: round4(cvBrier),
@@ -926,22 +1005,29 @@ export function oddsFor(
   protocol: SnapshotProtocol,
   asOf: string,
   odds: OddsFit,
+  kinship: number,
   model: ModelConstants = MODEL,
-): { odds: number; category_rate: number } {
+): { odds: number; category_rate: number; components: OddsComponents } {
   const age = ageDays(asOf, protocol.listed_at);
   const category = protocol.category ?? '(uncategorised)';
   const row = odds.category_rates.find((r) => r.category === category);
   const rate = row === undefined ? odds.global_rate : row.rate;
   const clamped = Math.min(0.99, Math.max(0.01, rate));
-  const z =
-    odds.beta[0]! +
-    odds.beta[1]! * Math.log(protocol.tvl_usd) +
-    odds.beta[2]! * Math.log((age ?? model.unknown_age_days) + 1) +
-    odds.beta[3]! * Math.log1p(protocol.chains.length) +
-    odds.beta[4]! * Math.log(clamped / (1 - clamped));
+  const components: OddsComponents = {
+    constant: odds.beta[0]!,
+    tvl: odds.beta[1]! * Math.log(protocol.tvl_usd),
+    age: odds.beta[2]! * Math.log((age ?? model.unknown_age_days) + 1),
+    chains: odds.beta[3]! * Math.log1p(protocol.chains.length),
+    category: odds.beta[4]! * Math.log(clamped / (1 - clamped)),
+    kinship: odds.beta[5]! * kinship,
+    total: 0,
+  };
+  components.total =
+    components.constant + components.tvl + components.age + components.chains + components.category + components.kinship;
   return {
-    odds: Math.min(model.odds_max, Math.max(model.odds_min, sigmoid(z))),
+    odds: Math.min(model.odds_max, Math.max(model.odds_min, sigmoid(components.total))),
     category_rate: rate,
+    components,
   };
 }
 
@@ -995,11 +1081,14 @@ export function impliedValue(
   asOf: string,
   calibration: Calibration,
   odds: OddsFit,
+  kinship: number,
   model: ModelConstants = MODEL,
 ): {
   value: number;
   odds: number;
   categoryRate: number;
+  kinship: number;
+  oddsComponents: OddsComponents;
   implied: number;
   rangeLow: number;
   rangeHigh: number;
@@ -1022,7 +1111,7 @@ export function impliedValue(
   const { factor, source, group, peers } = factorFor(protocol.category, calibration);
   const base = Math.exp(calibration.regression.intercept + calibration.regression.slope * Math.log(protocol.tvl_usd));
   const value = Math.max(1, Math.round(base * factor * growthMult));
-  const { odds: oddsValue, category_rate } = oddsFor(protocol, asOf, odds, model);
+  const { odds: oddsValue, category_rate, components } = oddsFor(protocol, asOf, odds, kinship, model);
   const implied = Math.max(1, Math.min(model.implied_cap_usd, Math.round(value * oddsValue)));
   const half = 0.674 * calibration.range_check.sigma_log;
   const rangeLow = Math.max(1, Math.round(implied * Math.exp(-half)));
@@ -1031,6 +1120,8 @@ export function impliedValue(
     value,
     odds: oddsValue,
     categoryRate: category_rate,
+    kinship,
+    oddsComponents: components,
     implied,
     rangeLow,
     rangeHigh,
@@ -1259,13 +1350,16 @@ export function buildBoard(
     scopeOf.set(p.slug, p.tvl_usd >= snapshot.floor_usd ? 'off-list' : 'early');
   }
 
+  const kin = new Map(snapshot.protocols.map((p) => [p.slug, kinshipOf(p, snapshot.protocols)]));
   const scored = [...scopeOf.entries()].map(([slug, scope]) => {
     const p = index.get(slug)!;
-    const v = impliedValue(p, snapshot.as_of, calibration, odds, model);
+    const v = impliedValue(p, snapshot.as_of, calibration, odds, kin.get(slug)!, model);
     return { p, scope, ...v };
   });
   scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.slug ? 1 : 0));
-  return scored.map((s, i) => ({
+  return scored.map((s, i) => {
+    const steps = farmSteps(s.p, s.age);
+    return {
     rank: i + 1,
     slug: s.p.slug,
     name: s.p.name,
@@ -1298,10 +1392,22 @@ export function buildBoard(
       growth_multiplier: round4(s.growthMult),
       launch_odds: round4(s.odds),
       category_token_rate: round4(s.categoryRate),
+      kinship: s.kinship,
+      odds_components: {
+        constant: round4(s.oddsComponents.constant),
+        tvl: round4(s.oddsComponents.tvl),
+        age: round4(s.oddsComponents.age),
+        chains: round4(s.oddsComponents.chains),
+        category: round4(s.oddsComponents.category),
+        kinship: round4(s.oddsComponents.kinship),
+        total: round4(s.oddsComponents.total),
+      },
       age_days: s.age,
     },
-    farm_steps: farmSteps(s.p, s.age).map(stepText),
-  }));
+    farm_steps: steps.map(stepText),
+    farm_plan: steps,
+    };
+  });
 }
 
 /** The live-token protocols, by market cap, for the dashboard's Live token view. */
@@ -1347,9 +1453,12 @@ export function radarRow(row: BoardRow): RadarRow {
     category_peers: row.model.category_peers,
     growth_multiplier: row.model.growth_multiplier,
     category_token_rate: row.model.category_token_rate,
+    kinship: row.model.kinship,
+    odds_components: row.model.odds_components,
     labor_hours: row.labor_hours,
     gas_total_usd: row.gas_total_usd,
     comparables: row.comparables,
+    farm_steps: row.farm_plan,
   };
 }
 
