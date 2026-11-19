@@ -2,11 +2,12 @@
 //
 // The program reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>),
 // fits a log-log regression of market cap on TVL from the snapshot's own live-token
-// protocols plus a launch-odds model from its live/pre-token split, scores every
-// pre-token protocol of the candidate shape with the model in lib/model.ts, writes the
-// ranked board to /output/board.json, and copies this repository's dashboard/ and
-// screenshots/ to /output. Last, it writes /output/dossier.json, the summary the judge
-// reads, with the vendored make.fun library.
+// protocols plus a launch-odds model from its live/pre-token split (with a kinship
+// feature: whether the protocol's name shares a stem with one that already records a
+// token), scores every pre-token protocol of the candidate shape with the model in
+// lib/model.ts, writes the ranked board to /output/board.json, and copies this
+// repository's dashboard/ and screenshots/ to /output. Last, it writes
+// /output/dossier.json, the summary the judge reads, with the vendored make.fun library.
 //
 // The dashboard is a static page, no framework and no network: dashboard/index.html,
 // dashboard/app.css and dashboard/app.js read /output/data.js, which this program
@@ -57,7 +58,13 @@ if (issue !== null) {
 }
 
 mkdirSync(out, { recursive: true });
-writeFileSync(join(out, 'board.json'), `${JSON.stringify({ rows: board })}\n`);
+// board.json carries the gate's shape: farm_plan is the dashboard's structured
+// copy of the same steps and stays out of the board file.
+const boardForFile = board.map((r) => {
+  const { farm_plan: _plan, ...rest } = r;
+  return rest;
+});
+writeFileSync(join(out, 'board.json'), `${JSON.stringify({ rows: boardForFile })}\n`);
 writeFileSync(join(out, 'data.js'), dataScript(radar));
 
 // The page's data must be the board's data: read both files back and count the rows
@@ -113,6 +120,6 @@ process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.off_list_size} off-list, ${radar.early_size} early)\n` +
     `token radar: value log(mcap) = ${calibration.regression.intercept} + ${calibration.regression.slope} x log(TVL), R2 ${calibration.regression.r_squared}, ` +
     `growth coef ${calibration.regression.growth_coef}, LOO median ${calibration.regression.loo_median_factor}x, from ${calibration.regression.trimmed_count} trimmed live protocols\n` +
-    `token radar: odds logit on ${odds.train_count} candidates, LOO ${odds.loo_correct}/${odds.train_count} right (${odds.loo_accuracy}), Brier ${odds.loo_brier} vs base ${odds.base_rate}\n` +
+    `token radar: odds logit on ${odds.train_count} candidates (kinship ${odds.kinship.n_with_kin} with kin, ${odds.kinship.rate_with_kin} token rate vs ${odds.kinship.rate_without_kin} without), LOO ${odds.loo_correct}/${odds.train_count} right (${odds.loo_accuracy}), Brier ${odds.loo_brier} vs base ${odds.base_rate}\n` +
     `token radar: data.js matches board.json on ${matched}/${board.length} rows; wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')}, ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
 );
