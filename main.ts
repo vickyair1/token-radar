@@ -15,7 +15,10 @@
 // snapshot figures and the fitted models, so the page's arithmetic and the board's
 // data are visibly the same numbers — and this program verifies it at the file level:
 // it reads board.json and data.js back and counts the rows whose implied values agree,
-// stamping the count into data.js before the dossier is built.
+// stamping the count into data.js before the dossier is built. The board also carries
+// a bootstrap rank range per row (200 seeded refits of both models), an FNV-1a
+// checksum over its slug:implied pairs, and farm verdicts at a deposit plan of 0.02%
+// of TVL (capped at $10,000, floored at $10).
 //
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input ../input/snapshot.json
@@ -23,7 +26,7 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { boardIssue, buildRadar, dataScript, parseSnapshot } from './lib/model.ts';
+import { boardChecksum, boardIssue, buildRadar, dataScript, farmNet, parseSnapshot, planDepositUsd } from './lib/model.ts';
 import { buildDossier } from './vendor/makefun-board.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
@@ -116,10 +119,28 @@ for (const name of shots) {
 // The dossier is written last: the scorer rebuilds it from this /output and compares bytes.
 writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEXT_MAX_BYTES, screenshots: SCREENSHOT_CAPS, dashboard: { max_files: 400, max_bytes: 4_194_304 } }));
 
+/** The verdict counts at the plan deposit and the default 7% drop share. */
+function verdictCounts(board: { implied_value_usd: number; tvl_usd: number; gas_total_usd: number; labor_hours: number; age_days: number | null }[]): string {
+  let farm = 0;
+  let marginal = 0;
+  let skip = 0;
+  for (const r of board) {
+    const deposit = planDepositUsd(r.tvl_usd);
+    const net = farmNet(r.implied_value_usd, r.tvl_usd, deposit, 0.07, r.gas_total_usd);
+    const hold = r.age_days === null ? 30 : r.age_days < 180 ? 60 : r.age_days < 365 ? 45 : 30;
+    const tbill = deposit * 0.04 * hold / 365;
+    if (net > 10 && net / r.labor_hours >= 25 && net > tbill) farm++;
+    else if (net > 0) marginal++;
+    else skip++;
+  }
+  return `FARM ${farm} / MARGINAL ${marginal} / SKIP ${skip}`;
+}
+
 process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.off_list_size} off-list, ${radar.early_size} early)\n` +
     `token radar: value log(mcap) = ${calibration.regression.intercept} + ${calibration.regression.slope} x log(TVL), R2 ${calibration.regression.r_squared}, ` +
     `growth coef ${calibration.regression.growth_coef}, LOO median ${calibration.regression.loo_median_factor}x, from ${calibration.regression.trimmed_count} trimmed live protocols\n` +
     `token radar: odds logit on ${odds.train_count} candidates (kinship ${odds.kinship.n_with_kin} with kin, ${odds.kinship.rate_with_kin} token rate vs ${odds.kinship.rate_without_kin} without), LOO ${odds.loo_correct}/${odds.train_count} right (${odds.loo_accuracy}), Brier ${odds.loo_brier} vs base ${odds.base_rate}\n` +
-    `token radar: data.js matches board.json on ${matched}/${board.length} rows; wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')}, ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
+    `token radar: bootstrap ${radar.bootstrap.refits} refits: multiple at $100M TVL ${radar.bootstrap.multiple_at_100m_mean} ± ${radar.bootstrap.multiple_at_100m_se}, slope ${radar.bootstrap.slope_mean} ± ${radar.bootstrap.slope_se}; board checksum ${boardChecksum(board)}\n` +
+    `token radar: verdicts at the plan deposit (0.02% of TVL, 7% drop): ${verdictCounts(board)}; data.js matches board.json on ${matched}/${board.length} rows; wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')}, ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
 );
